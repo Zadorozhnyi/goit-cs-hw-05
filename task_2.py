@@ -1,35 +1,57 @@
+import string
+from concurrent.futures import ThreadPoolExecutor
+from collections import defaultdict
 import requests
-import re
 import matplotlib.pyplot as plt
-import concurrent.futures
-from collections import Counter
-from multiprocessing import Pool
 
-# Функція для отримання тексту з URL
-def fetch_text(url):
-    response = requests.get(url)
-    response.raise_for_status()
-    return response.text
+def get_text(url):
+    try:
+        response = requests.get(url)
+        # Перевірка на помилки HTTP
+        response.raise_for_status()
+        return response.text
+    except requests.RequestException as e:
+        return None
 
-# Функція для обробки тексту та розбиття його на слова
-def tokenize(text):
-    words = re.findall(r'\b\w+\b', text.lower())
-    return words
+# Функція для видалення знаків пунктуації
+def remove_punctuation(text):
+    return text.translate(str.maketrans("", "", string.punctuation))
 
-# MapReduce: Функція map для підрахунку частоти слів
-def map_words(chunk):
-    return Counter(chunk)
+def map_function(word):
+    return word, 1
 
-# Reduce: об'єднання підрахунків
-def reduce_counters(counters):
-    total_counter = Counter()
-    for counter in counters:
-        total_counter.update(counter)
-    return total_counter
+def shuffle_function(mapped_values):
+    shuffled = defaultdict(list)
+    for key, value in mapped_values:
+        shuffled[key].append(value)
+    return shuffled.items()
 
-# Функція для візуалізації топ N слів
-def visualize_top_words(word_counts, top_n=10):
-    top_words = word_counts.most_common(top_n)
+def reduce_function(key_values):
+    key, values = key_values
+    return key, sum(values)
+
+# Виконання MapReduce
+def map_reduce(text):
+    # Видалення знаків пунктуації
+    text = remove_punctuation(text)
+    words = text.split()
+
+    # Крок 1: Паралельний Мапінг
+    with ThreadPoolExecutor() as executor:
+        mapped_values = list(executor.map(map_function, words))
+
+    # Крок 2: Shuffle
+    shuffled_values = shuffle_function(mapped_values)
+
+    # Крок 3: Паралельна Редукція
+    with ThreadPoolExecutor() as executor:
+        reduced_values = list(executor.map(reduce_function, shuffled_values))
+
+    return dict(reduced_values)
+
+# Функція для візуалізації топ 10 слів
+def visualize_top_words(word_counts):
+    top_words = sorted(word_counts.items(), key=lambda x: x[1], reverse=True)[:10]
     words, counts = zip(*top_words)
     
     plt.figure(figsize=(10, 5))
@@ -38,21 +60,21 @@ def visualize_top_words(word_counts, top_n=10):
     plt.ylabel("Words")
     plt.title("Top 10 Most Frequent Words")
     plt.show()
+    
+def process_text(url):
+    # Вхідний текст для обробки
+    text = get_text(url)
+    if text:
+        # Виконання MapReduce на вхідному тексті
+        result = map_reduce(text)
+        print("Результат підрахунку слів:", result)
+        
+        # Візуалізація
+        visualize_top_words(result)
+    else:
+        print("Помилка: Не вдалося отримати вхідний текст.")
 
-def main():
-    url = "https://www.gutenberg.org/files/1342/1342-0.txt"  # Приклад: Гордiсть i упередження
-    text = fetch_text(url)
-    words = tokenize(text)
-    
-    num_chunks = 4  # Розділити текст на 4 частини для багатопроцесорної обробки
-    chunk_size = len(words) // num_chunks
-    chunks = [words[i * chunk_size:(i + 1) * chunk_size] for i in range(num_chunks)]
-    
-    with Pool() as pool:
-        mapped = pool.map(map_words, chunks)
-    
-    word_counts = reduce_counters(mapped)
-    visualize_top_words(word_counts)
 
-if __name__ == "__main__":
-    main()
+if __name__ == '__main__':
+    process_text("https://gutenberg.net.au/ebooks01/0100021.txt")
+    process_text("https://www.gutenberg.org/files/1342/1342-0.txt")
